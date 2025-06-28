@@ -25,7 +25,7 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {UniswapLibV4} from "../src/UniswapLibV4.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
 
-contract CounterTest is Test, Deployers {
+contract UniswapLibV4Test is Test, Deployers {
 
     using SafeERC20 for IERC20;
     using EasyPosm for IPositionManager;
@@ -40,7 +40,7 @@ contract CounterTest is Test, Deployers {
 
     PoolKey poolKey;
 
-    // Counter hook;
+    // My hook;
     IHooks constant hook = IHooks(address(0x0)); // hook address
     PoolId poolId;
 
@@ -63,11 +63,6 @@ contract CounterTest is Test, Deployers {
         (currency0, currency1) = deployCurrencyPair();
 
         Currency nativeETH = Currency.wrap(address(0));
-
-        // Mint 100e18 currency1 tokens to externalUser (100 tokens)
-        MockERC20(Currency.unwrap(currency1)).mint(externalUser, 100e18);
-        console2.log("User token balance at the start: %i Tokens (%i Tokens in wei)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
-        console2.log("User ETH balance at the start: %i ETH (%i ETH in wei)", FullMath.mulDiv(externalUser.balance, 1, 10 ** 18), externalUser.balance);
 
         // Create the pool with 1/1 price
         poolKey = PoolKey(nativeETH, currency1, 500, 60, IHooks(hook));
@@ -93,6 +88,11 @@ contract CounterTest is Test, Deployers {
         console2.log("ETH Liquidity expected: %i ETH (%i in wei)",amount0Expected / 10 ** 18, amount0Expected);
         console2.log("Token Liquidity expected: %i Tokens (%i in wei)",amount1Expected / 10 ** 18, amount1Expected);
 
+        // Mint 100e18 currency1 tokens to externalUser (100 tokens)
+        MockERC20(Currency.unwrap(currency1)).mint(externalUser, 100e18);
+        console2.log("User token balance at the start: %i Tokens (%i)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
+        console2.log("User ETH balance at the start: %i ETH (%i)", FullMath.mulDiv(externalUser.balance, 1, 10 ** 18), externalUser.balance);
+
         // Mint the liquidity
         (tokenId,) = positionManager.mint(
             poolKey,
@@ -110,11 +110,7 @@ contract CounterTest is Test, Deployers {
     function testSwapTokensForETH() public {
         address token = Currency.unwrap(currency1);
 
-        // get the price the token in ETH
-        uint256 price1 = UniswapLibV4.getPriceInPaymentToken(poolManager, token);
-        console2.log("Pool price of 1 token in ETH: %i ETH (%i ETH in wei)", FullMath.mulDiv(price1, 1, 10 ** 18), price1);
-
-        // externalUser approves (this contract) CounterTest in order to do the safeTransferFrom
+        // externalUser approves (this contract) UniswapLibV4Test in order to do the safeTransferFrom
         vm.prank(externalUser);
         IERC20(token).approve(address(this), type(uint256).max); 
 
@@ -124,16 +120,19 @@ contract CounterTest is Test, Deployers {
         // check user balance
         assertEq(swapDeltaTx.amount0(), int128(int256(externalUser.balance)));
 
-        console2.log("User token balance at the end: %i Tokens (%i Tokens in wei)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
+        console2.log("User token balance at the end: %i Tokens (%i)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
 
-        console2.log("User ETH balance at the end: %i ETH (%i ETH in wei)", FullMath.mulDiv(externalUser.balance, 1, 10 ** 18), externalUser.balance);
+        console2.log("User ETH balance at the end: %i ETH (%i)", FullMath.mulDiv(externalUser.balance, 1, 10 ** 18), externalUser.balance);
     }
 
     // function testSwapETHForTokens() public {
 
     //     address token = Currency.unwrap(currency1);
-    //     uint256 sqrtPriceX96 = UniswapLibV4.getPriceInPaymentToken2(poolManager, token);
-    //     console2.log("Precio actual del pool (sqrtPriceX96) antes del swap: ", sqrtPriceX96);
+
+    //     (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+
+    //     // uint256 sqrtPriceX96 = UniswapLibV4.getPriceInPaymentToken2(poolManager, token);
+    //     console2.log("Pool price (sqrtPriceX96) before the swap: ", sqrtPriceX96);
 
     //     int256 amountIn = 100e18;
     //     BalanceDelta swapDelta = swapRouter.swap{value: uint256(amountIn)}({
@@ -143,15 +142,18 @@ contract CounterTest is Test, Deployers {
     //         zeroForOne: true,
     //         poolKey: poolKey,
     //         hookData: Constants.ZERO_BYTES,
-    //         receiver: address(this),
+    //         receiver: address(externalUser),
     //         deadline: block.timestamp + 1
     //     });
 
-    //     console2.log("swapDelta.amount0: ", swapDelta.amount0());
-    //     console2.log("swapDelta.amount1: ", swapDelta.amount1());
+    //     console2.log("swapDelta.amount0 (ETH): ", swapDelta.amount0());
+    //     console2.log("swapDelta.amount1 (Token): ", swapDelta.amount1());
 
-    //     sqrtPriceX96 = UniswapLibV4.getPriceInPaymentToken2(poolManager, token);
-    //     console2.log("Precio actual del pool (sqrtPriceX96) despues del swap: ", sqrtPriceX96);
+    //     console2.log("User token balance at the end: %i Tokens (%i)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
+
+    //     (sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+    //     // sqrtPriceX96 = UniswapLibV4.getPriceInPaymentToken2(poolManager, token);
+    //     console2.log("Pool price (sqrtPriceX96) after the swap: ", sqrtPriceX96);
     // }
 
     // function testGetPrice() public {
@@ -162,7 +164,7 @@ contract CounterTest is Test, Deployers {
     //     console2.log("price2: ", price2);
 
     //     vm.prank(externalUser);
-    //     IERC20(token).approve(address(this), type(uint256).max); // externalUser aprueba a CounterTest
+    //     IERC20(token).approve(address(this), type(uint256).max); // externalUser approves UniswapLibV4Test
     //     BalanceDelta swapDeltaTx = UniswapLibV4._swapTokensForETH(poolManager, swapRouter, token, externalUser);
 
     //     price1 = UniswapLibV4.getPriceInPaymentToken(poolManager, token);
