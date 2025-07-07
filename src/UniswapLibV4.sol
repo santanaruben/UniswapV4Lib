@@ -16,9 +16,7 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {BalanceDelta} from "@uniswap/v4-core/src/types/BalanceDelta.sol";
 import {Constants} from "@uniswap/v4-core/test/utils/Constants.sol";
 import {IUniswapV4Router04} from "hookmate/interfaces/router/IUniswapV4Router04.sol";
-
-// import {SwapMath} from "@uniswap/v4-core/src/libraries/SwapMath.sol";
-// import {TickMath} from "@uniswap/v4-core/src/libraries/TickMath.sol";
+import {Utils} from "./calculum-lib/Utils.sol";
 
 library UniswapLibV4 {
     
@@ -35,11 +33,13 @@ library UniswapLibV4 {
     /// @param swapRouter uniswap v4 swapRouter.
     /// @param tokenAddress Address of the ERC20 token to be swapped.
     /// @param _OZW Address of the openzeppelin defender.
-    function _swapTokensForETH(
+    /// @param hodlVaultAddress Address of the HodlVault contract for fee calculation.
+    function swapTokensForETH(
         IPoolManager poolManager,
         IUniswapV4Router04 swapRouter,
         address tokenAddress,
-        address _OZW
+        address _OZW,
+        address hodlVaultAddress
     ) public returns(BalanceDelta swapDelta){
 
         // IPoolManager POOLMANAGER = IPoolManager(AddressConstants.getPoolManagerAddress(block.chainid));
@@ -55,15 +55,24 @@ library UniswapLibV4 {
             hooks: HOOK_CONTRACT
         });
         IERC20Metadata _asset = IERC20Metadata(tokenAddress);
-        uint256 assetsDecimals = 5 * 10 ** IERC20Metadata(_asset).decimals(); // Deduct 5 tokens for Minimal Floor of Vault
+        uint256 assetDecimals = _asset.decimals();
+        
+        // calculates the vault performance fee
+        uint256 performanceFee = Utils.perfFeePctVaultToken(hodlVaultAddress, tokenAddress);
+
+        console2.log("performanceFee", performanceFee);
+
         // address OZW = AddressConstants.getOZWAddress(block.chainid);
         address OZW = _OZW;
 
-        uint256 tokenAmount = IERC20Metadata(_asset).balanceOf(OZW) - assetsDecimals; // Deduct 5 token fee
+        uint256 tokenAmount = _asset.balanceOf(OZW) - performanceFee; // Deducts the calculated fee
+
+        console2.log("_asset.balanceOf(OZW)", _asset.balanceOf(OZW));
+        console2.log("tokenAmount", tokenAmount);
 
         uint256 expectedAmount = FullMath.mulDiv(tokenAmount,
             getPriceInPaymentToken(POOLMANAGER, address(_asset)),
-            10 ** IERC20Metadata(_asset).decimals()
+            10 ** assetDecimals
         );
 
         // transfer and allowances
@@ -108,6 +117,7 @@ library UniswapLibV4 {
         (bool success, ) = OZW.call{value: amountOut}("");
         require(success, "Tx failed");
     }
+
 
     /// @dev Retrieves the price of 1 token in terms of the payment token using a Uniswap V4 pool.
     /// @param poolManager uniswap v4 poolManager.
@@ -162,7 +172,7 @@ library UniswapLibV4 {
 
     //     (,uint256 amount0Delta,,) = SwapMath.computeSwapStep(
     //         sqrtPriceX96,
-    //         TickMath.getSqrtPriceAtTick(TickMath.MAX_TICK), // Swap hasta el final (simplificado)
+    //         TickMath.getSqrtPriceAtTick(TickMath.MAX_TICK), // Simplified swap to the end
     //         POOLMANAGER.getLiquidity(poolId),
     //         int256(amountIn),
     //         FEE

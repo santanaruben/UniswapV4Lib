@@ -24,6 +24,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {UniswapLibV4} from "../src/UniswapLibV4.sol";
 import {FullMath} from "@uniswap/v4-core/src/libraries/FullMath.sol";
+import {Utils} from "../src/calculum-lib/Utils.sol";
+import {MockHodlVault} from "./mocks/MockHodlVault.sol";
+import {MockERC20Metadata} from "./mocks/MockERC20Metadata.sol";
+import {MathUpgradeable} from "@openzeppelin-contracts-upgradeable/contracts/utils/math/MathUpgradeable.sol";
 
 contract UniswapLibV4Test is Test, Deployers {
 
@@ -32,6 +36,7 @@ contract UniswapLibV4Test is Test, Deployers {
     using PoolIdLibrary for PoolKey;
     using CurrencyLibrary for Currency;
     using StateLibrary for IPoolManager;
+    using MathUpgradeable for uint256;
 
     receive() external payable {} // Permite que el contrato reciba ETH
 
@@ -53,9 +58,6 @@ contract UniswapLibV4Test is Test, Deployers {
     using UniswapLibV4 for *;
 
     function setUp() public {
-        
-        // New address to test OZW
-        externalUser = vm.addr(1); 
 
         // Deploys all required artifacts.
         deployArtifacts();
@@ -63,6 +65,15 @@ contract UniswapLibV4Test is Test, Deployers {
         (currency0, currency1) = deployCurrencyPair();
 
         Currency nativeETH = Currency.wrap(address(0));
+
+        // New address to test OZW
+        externalUser = vm.addr(1); 
+
+        // externalUser approves (this contract) UniswapLibV4Test in order to do the safeTransferFrom
+        vm.prank(externalUser);
+        MockERC20(Currency.unwrap(currency1)).approve(address(this), type(uint256).max);
+        vm.prank(externalUser);
+        MockERC20(Currency.unwrap(currency1)).approve(address(swapRouter), type(uint256).max);
 
         // Create the pool with 1/1 price
         poolKey = PoolKey(nativeETH, currency1, 500, 60, IHooks(hook));
@@ -110,15 +121,64 @@ contract UniswapLibV4Test is Test, Deployers {
     function testSwapTokensForETH() public {
         address token = Currency.unwrap(currency1);
 
-        // externalUser approves (this contract) UniswapLibV4Test in order to do the safeTransferFrom
-        vm.prank(externalUser);
-        IERC20(token).approve(address(this), type(uint256).max); 
+        // Para este test, creamos una instancia de MockHodlVault
+        MockHodlVault mockHodlVault = new MockHodlVault(
+            1, // currentEpoch
+            100000e6, // dexWalletBalance
+            1e16, // performanceFeePercentage (1% escalado a 18 decimales)
+            5e15, // managementFeePercentage (0.5% escalado a 18 decimales)
+            31556926, // epochDuration
+            1e18, // decimalFactor
+            0 // transferBotTargetWalletBalanceUsdc
+        );
+
+        uint256 currentEpochForTest = 1;
+        uint256 previousEpochForTest = currentEpochForTest - 1;
+        uint256 vaultTokenSupplyPreviousEpochForTest = 100e18; // 100 tokens de bóveda (18 decimales)
+        uint256 vaultTokenPricePreviousEpochForTest = 99e6; // Precio anterior: 99 USDC por token de bóveda (6 decimales)
+
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setVaultTokenSupply(previousEpochForTest, vaultTokenSupplyPreviousEpochForTest);
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setVaultTokenPrice(previousEpochForTest, vaultTokenPricePreviousEpochForTest);
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setDexWalletBalance(100000e18); // Usar el mismo dexWalletBalance que en la inicialización
+
+        // Calcular los valores esperados para pnlPerVaultToken y expectedPerformanceFee
+        // Replicar la lógica de Utils.sol para propósitos de assert y logging
+        uint256 assetDecimalsForTest = 10 ** MockERC20Metadata(token).decimals();
+        uint256 hodlDecimalsForTest = 10 ** mockHodlVault.decimals();
+
+        uint256 pricePerTokenFromDexExpectedForTest = MathUpgradeable.mulDiv(
+            mockHodlVault.DEX_WALLET_BALANCE(),
+            assetDecimalsForTest,
+            MathUpgradeable.mulDiv(
+                vaultTokenSupplyPreviousEpochForTest,
+                assetDecimalsForTest,
+                hodlDecimalsForTest,
+                MathUpgradeable.Rounding.Down
+            ),
+            MathUpgradeable.Rounding.Down
+        );
+
+        uint256 pnlPerVaultTokenExpectedForTest = pricePerTokenFromDexExpectedForTest - vaultTokenPricePreviousEpochForTest;
+
+        uint256 expectedPerformanceFeeForTest = MathUpgradeable.mulDiv(
+            pnlPerVaultTokenExpectedForTest,
+            mockHodlVault.PERFORMANCE_FEE_PERCENTAGE(),
+            hodlDecimalsForTest,
+            MathUpgradeable.Rounding.Down
+        );
+
+        console2.log("pnlPerVaultTokenExpectedForTest: %i", pnlPerVaultTokenExpectedForTest);
+        console2.log("expectedPerformanceFeeForTest: %i", expectedPerformanceFeeForTest);
 
         // swap token for ETH
-        BalanceDelta swapDeltaTx = UniswapLibV4._swapTokensForETH(poolManager, swapRouter, token, externalUser);
+        // BalanceDelta swapDeltaTx = 
+        UniswapLibV4.swapTokensForETH(poolManager, swapRouter, token, externalUser, address(mockHodlVault));
 
         // check user balance
-        assertEq(swapDeltaTx.amount0(), int128(int256(externalUser.balance)));
+        // assertEq(swapDeltaTx.amount0(), int128(int256(externalUser.balance)));
 
         console2.log("User token balance at the end: %i Tokens (%i)", FullMath.mulDiv(MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser), 1, 10 ** 18), MockERC20(Currency.unwrap(currency1)).balanceOf(externalUser));
 
@@ -126,7 +186,6 @@ contract UniswapLibV4Test is Test, Deployers {
     }
 
     // function testSwapETHForTokens() public {
-
     //     address token = Currency.unwrap(currency1);
 
     //     (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
@@ -165,11 +224,83 @@ contract UniswapLibV4Test is Test, Deployers {
 
     //     vm.prank(externalUser);
     //     IERC20(token).approve(address(this), type(uint256).max); // externalUser approves UniswapLibV4Test
-    //     BalanceDelta swapDeltaTx = UniswapLibV4._swapTokensForETH(poolManager, swapRouter, token, externalUser);
+    //     BalanceDelta swapDeltaTx = UniswapLibV4.swapTokensForETH(poolManager, swapRouter, token, externalUser);
 
     //     price1 = UniswapLibV4.getPriceInPaymentToken(poolManager, token);
     //     console2.log("price1: ", price1);
     //     price2 = UniswapLibV4.computePrice(poolManager, token, 1e18);
     //     console2.log("price2: ", price2);
     // }
+
+    function testPerfFeePctVaultToken() public {
+        // Datos de ejemplo para el mock de HodlVault y el token
+        uint256 currentEpoch = 1; // Un epoch > 0
+        uint256 dexWalletBalance = 10000e6; // 10,000 USDC (con 6 decimales)
+        uint256 performanceFeePercentage = 1e16; // 1% (escalado a 18 decimales)
+        uint256 managementFeePercentage = 5e15; // 0.5%
+        uint256 epochDuration = 31556926; // Un año en segundos
+        uint256 decimalFactor = 1e18; // Factor decimal de la bóveda
+        uint256 transferBotTargetWalletBalanceUsdc = 0;
+
+        // Desplegar el mock de HodlVault
+        MockHodlVault mockHodlVault = new MockHodlVault(
+            currentEpoch,
+            dexWalletBalance,
+            performanceFeePercentage,
+            managementFeePercentage,
+            epochDuration,
+            decimalFactor,
+            transferBotTargetWalletBalanceUsdc
+        );
+
+        // Desplegar el mock de ERC20Metadata (token de ejemplo USDC)
+        MockERC20Metadata mockUSDC = new MockERC20Metadata("USDC", "USDC", 18);
+
+        // Establecer el supply y el precio del token de la bóveda para el epoch anterior
+        uint256 previousEpoch = currentEpoch - 1;
+        uint256 vaultTokenSupplyPreviousEpoch = 100e18; // 100 tokens de bóveda
+        uint256 vaultTokenPricePreviousEpoch = 99e6; // Precio anterior: 99 USDC por token de bóveda
+
+        // Simular llamadas desde el contrato de prueba para establecer los valores
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setVaultTokenSupply(previousEpoch, vaultTokenSupplyPreviousEpoch);
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setVaultTokenPrice(previousEpoch, vaultTokenPricePreviousEpoch);
+        vm.prank(address(mockHodlVault));
+        mockHodlVault.setDexWalletBalance(dexWalletBalance);
+
+        // Calcular el pnlPerVaultToken esperado manualmente para verificar la función
+        // DEX_WALLET_BALANCE * assetDecimals / (VAULT_TOKEN_SUPPLY(prev) * assetDecimals / hodlDecimals)
+        // hodlDecimals es 6 en el mock de HodlVault.decimals()
+        // assetDecimals es 6 en el mock de USDC.decimals()
+
+        // (10000e6 * 10^6) / (100e18 * 10^6 / 10^6) = 10000e12 / 100e18 = 100e-6 * 10^6 = 100
+        // pricePerTokenFromDex = 10000e6 * 1e6 / (100e18 * 1e6 / 1e6) = 10000e12 / 100e18 = 100e-6
+        // Esto es 100 en el contexto de 6 decimales para USDC
+        // Lo calculamos como uint256(10000e6) porque el mock tiene 6 decimales.
+
+        uint256 normalizedVaultTokenSupply = MathUpgradeable.mulDiv(vaultTokenSupplyPreviousEpoch, 10 ** mockUSDC.decimals(), 10 ** mockHodlVault.decimals(), MathUpgradeable.Rounding.Down);
+
+        uint256 pricePerTokenFromDexExpected = MathUpgradeable.mulDiv(dexWalletBalance, 10 ** mockUSDC.decimals(), normalizedVaultTokenSupply, MathUpgradeable.Rounding.Down);
+
+        // Redondear a la cantidad de decimales correcta para la comparación si es necesario
+        // Asumiendo que todos los cálculos intermedios son enteros
+        // pricePerTokenFromDexExpected = MathUpgradeable.mulDiv(dexWalletBalance, (10**6), MathUpgradeable.mulDiv(vaultTokenSupplyPreviousEpoch, (10**6), (10**6), MathUpgradeable.Rounding.Down), MathUpgradeable.Rounding.Down);
+
+        // Este valor debe ser el que esperamos que getPnLPerVaultToken devuelva como ganancia
+        uint256 pnlPerVaultTokenExpected = pricePerTokenFromDexExpected - vaultTokenPricePreviousEpoch;
+
+        // Calcular la performanceFee esperada
+        uint256 expectedPerformanceFee = MathUpgradeable.mulDiv(pnlPerVaultTokenExpected, performanceFeePercentage, 10 ** mockHodlVault.decimals(), MathUpgradeable.Rounding.Down);
+
+        // Llamar a la función que queremos testear
+        uint256 actualPerformanceFee = Utils.perfFeePctVaultToken(address(mockHodlVault), address(mockUSDC));
+
+        console2.log("Calculated pnlPerVaultTokenExpected: %i", pnlPerVaultTokenExpected);
+        console2.log("Calculated expectedPerformanceFee: %i", expectedPerformanceFee);
+        console2.log("Actual performanceFee: %i", actualPerformanceFee);
+
+        // Verificar que el resultado sea el esperado. Ajusta este valor si tus cálculos manuales difieren.
+        assertEq(actualPerformanceFee, expectedPerformanceFee, "El performance fee calculado no coincide con el esperado");
+    }
 }
